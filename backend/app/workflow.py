@@ -14,7 +14,8 @@
 """
 
 import re
-from typing import Literal, TypedDict
+from datetime import datetime
+from typing import Callable, Literal, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
@@ -34,6 +35,7 @@ from app.risk import assess_email_risk, contains_any, merge_llm_risk
 
 
 WorkflowRoute = Literal["relevant", "irrelevant"]
+ProgressCallback = Callable[[EmailRecord], None]
 
 
 class EmailWorkflowState(TypedDict, total=False):
@@ -49,9 +51,37 @@ class EmailWorkflowState(TypedDict, total=False):
     email: EmailRecord
     use_llm: bool
     semantic_is_support_request: bool
+    progress_callback: ProgressCallback
 
 
-def process_email(email: EmailRecord, use_llm: bool = True) -> EmailRecord:
+def update_processing_progress(
+    state: EmailWorkflowState,
+    *,
+    stage: str,
+    progress: int,
+    message: str,
+    status: Literal["queued", "running", "completed", "failed"] = "running",
+) -> None:
+    """更新并持久化工作流进度。
+
+    进度在耗时节点调用前就会写入数据库，因此前端展示的是实际执行阶段，
+    而不是按时间递增的模拟百分比。
+    """
+    email = state["email"]
+    email.processing_status = status
+    email.processing_stage = stage
+    email.processing_progress = max(0, min(progress, 100))
+    email.processing_message = message
+    callback = state.get("progress_callback")
+    if callback:
+        callback(email)
+
+
+def process_email(
+    email: EmailRecord,
+    use_llm: bool = True,
+    progress_callback: ProgressCallback | None = None,
+) -> EmailRecord:
     """执行完整邮件处理流程。
 
     ``use_llm`` 主要用于测试或降级场景：当模型平台不可用时，系统仍然可以依靠
@@ -59,8 +89,39 @@ def process_email(email: EmailRecord, use_llm: bool = True) -> EmailRecord:
     """
     email.steps = []
     email.agent_metrics = AgentMetrics()
-    result = email_workflow.invoke({"email": email, "use_llm": use_llm})
-    return result["email"]
+    email.processing_status = "running"
+    email.processing_stage = "preprocess"
+    email.processing_progress = 8
+    email.processing_message = "正在识别语言、附件和规则信号"
+    email.processing_started_at = datetime.utcnow()
+    email.processing_finished_at = None
+    state: EmailWorkflowState = {
+        "email": email,
+        "use_llm": use_llm,
+    }
+    if progress_callback:
+        state["progress_callback"] = progress_callback
+        progress_callback(email)
+
+    try:
+        result = email_workflow.invoke(state)
+        processed = result["email"]
+        processed.processing_status = "completed"
+        processed.processing_stage = "completed"
+        processed.processing_progress = 100
+        processed.processing_message = "Agent 处理完成"
+        processed.processing_finished_at = datetime.utcnow()
+        if progress_callback:
+            progress_callback(processed)
+        return processed
+    except Exception as exc:
+        email.processing_status = "failed"
+        email.processing_progress = max(email.processing_progress, 5)
+        email.processing_message = f"{email.processing_message}失败：{type(exc).__name__}"
+        email.processing_finished_at = datetime.utcnow()
+        if progress_callback:
+            progress_callback(email)
+        raise
 
 
 def build_email_context(email: EmailRecord) -> str:
@@ -120,6 +181,12 @@ def preprocess_node(state: EmailWorkflowState) -> EmailWorkflowState:
             detail="Low-cost preprocessing detects language, strong policy signals, repeated contact, and business-blocking hints before any LLM call.",
             confidence=0.95,
         )
+    )
+    update_processing_progress(
+        state,
+        stage="relevance_gate",
+        progress=15,
+        message="预处理完成，正在判断是否属于客服场景",
     )
     return {"email": email}
 
@@ -192,6 +259,12 @@ def semantic_analysis_node(state: EmailWorkflowState) -> EmailWorkflowState:
                 confidence=email.confidence,
             )
         )
+        update_processing_progress(
+            state,
+            stage="semantic_relevance_gate",
+            progress=45,
+            message="语义分析完成，正在确认客服意图",
+        )
         return {"email": email, "semantic_is_support_request": llm_result.is_support_request}
 
     category, confidence, matched = classify_semantically(text)
@@ -221,6 +294,12 @@ def semantic_analysis_node(state: EmailWorkflowState) -> EmailWorkflowState:
             confidence=confidence,
         )
     )
+    update_processing_progress(
+        state,
+        stage="semantic_relevance_gate",
+        progress=45,
+        message="语义分析完成，正在确认客服意图",
+    )
     return {"email": email}
 
 
@@ -242,6 +321,13 @@ def semantic_relevance_gate_node(state: EmailWorkflowState) -> EmailWorkflowStat
             step_name="Semantic relevance gate",
             confidence=max(0.9, email.confidence),
         )
+        update_processing_progress(
+            state,
+            stage="completed",
+            progress=100,
+            message="已识别为非客服邮件，无需生成回复",
+            status="completed",
+        )
         return {"email": email}
 
     should_filter, reason = should_filter_after_semantic_analysis(email)
@@ -255,9 +341,22 @@ def semantic_relevance_gate_node(state: EmailWorkflowState) -> EmailWorkflowStat
                 confidence=0.84,
             )
         )
+        update_processing_progress(
+            state,
+            stage="retrieve",
+            progress=50,
+            message="客服意图确认完成，正在检索知识库",
+        )
         return {"email": email}
 
     mark_irrelevant_email(email, reason, step_name="Semantic relevance gate", confidence=0.9)
+    update_processing_progress(
+        state,
+        stage="completed",
+        progress=100,
+        message="已识别为非客服邮件，无需生成回复",
+        status="completed",
+    )
     return {"email": email}
 
 
@@ -281,9 +380,22 @@ def relevance_gate_node(state: EmailWorkflowState) -> EmailWorkflowState:
                 confidence=0.86,
             )
         )
+        update_processing_progress(
+            state,
+            stage="semantic_analysis",
+            progress=25,
+            message="客服场景初筛完成，正在进行语义分析",
+        )
         return {"email": email}
 
     mark_irrelevant_email(email, reason, step_name="Relevance gate", confidence=0.88)
+    update_processing_progress(
+        state,
+        stage="completed",
+        progress=100,
+        message="已识别为非客服邮件，无需生成回复",
+        status="completed",
+    )
     return {"email": email}
 
 
@@ -498,6 +610,12 @@ def retrieve_node(state: EmailWorkflowState) -> EmailWorkflowState:
             confidence=confidence,
         )
     )
+    update_processing_progress(
+        state,
+        stage="draft",
+        progress=65,
+        message="知识库检索完成，正在生成回复草稿",
+    )
     return {"email": email}
 
 
@@ -539,6 +657,12 @@ def draft_node(state: EmailWorkflowState) -> EmailWorkflowState:
             detail=detail,
             confidence=confidence,
         )
+    )
+    update_processing_progress(
+        state,
+        stage="review",
+        progress=90,
+        message="回复草稿已生成，正在执行审核门控",
     )
     return {"email": email}
 
@@ -940,6 +1064,12 @@ def review_node(state: EmailWorkflowState) -> EmailWorkflowState:
             ),
             confidence=0.88,
         )
+    )
+    update_processing_progress(
+        state,
+        stage="review",
+        progress=98,
+        message="审核门控完成，正在保存处理结果",
     )
     return {"email": email}
 

@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 
 EmailCategory = Literal["refund", "complaint", "technical", "billing", "product_question", "other"]
 EmailStatus = Literal["new", "processed", "human_review", "ready_to_send", "needs_revision", "escalated", "sent", "irrelevant"]
+EmailProcessingStatus = Literal["queued", "running", "completed", "failed"]
 RiskLevel = Literal["low", "medium", "high"]
 ReviewActionType = Literal["approve", "revise", "escalate", "undo_escalate"]
 KnowledgeDocumentStatus = Literal["processing", "indexed", "failed", "needs_reindex"]
@@ -177,6 +178,12 @@ class EmailRecord(BaseModel):
     category: EmailCategory | None = None
     priority: RiskLevel = "medium"
     status: EmailStatus = "new"
+    processing_status: EmailProcessingStatus = "queued"
+    processing_stage: str = "queued"
+    processing_progress: int = Field(default=5, ge=0, le=100)
+    processing_message: str = "等待 Agent 处理"
+    processing_started_at: datetime | None = None
+    processing_finished_at: datetime | None = None
     confidence: float = 0.0
     detected_language: Literal["en", "zh"] = "en"
     preprocessing_flags: list[str] = Field(default_factory=list)

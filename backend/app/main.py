@@ -458,6 +458,10 @@ def import_mail(background_tasks: BackgroundTasks, current_user: CurrentUser, li
         )
         email.status = "new"
         email.review_note = "已同步，等待 Agent 后台处理。"
+        email.processing_status = "queued"
+        email.processing_stage = "queued"
+        email.processing_progress = 5
+        email.processing_message = "邮件已入队，等待 Agent 处理"
         saved = store.save(email)
         queued_emails.append(saved)
         background_tasks.add_task(process_imported_email, saved.id)
@@ -489,8 +493,24 @@ def process_imported_email(email_id: str) -> None:
     email = store.get(email_id)
     if not email:
         return
-    processed = process_email(email)
-    saved = store.save(processed)
+    try:
+        processed = process_email(email, progress_callback=store.save)
+        saved = store.save(processed)
+    except Exception as exc:
+        failed = store.get(email_id) or email
+        record_operation_log(
+            scope="email",
+            action="process_imported_email_failed",
+            title=failed.subject,
+            summary=f"邮件「{failed.subject}」后台 Agent 处理失败。",
+            detail={
+                "email_id": failed.id,
+                "customer_email": failed.customer_email,
+                "processing_stage": failed.processing_stage,
+                "error_type": type(exc).__name__,
+            },
+        )
+        return
     record_operation_log(
         scope="email",
         action="process_imported_email",

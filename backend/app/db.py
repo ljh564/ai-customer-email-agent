@@ -60,6 +60,18 @@ def ensure_runtime_columns() -> None:
                 email_statements.append("ALTER TABLE emails ADD COLUMN agent_metrics JSONB DEFAULT '{}'::jsonb NOT NULL")
             else:
                 email_statements.append("ALTER TABLE emails ADD COLUMN agent_metrics JSON DEFAULT '{}' NOT NULL")
+        if "processing_status" not in email_columns:
+            email_statements.append("ALTER TABLE emails ADD COLUMN processing_status VARCHAR(32) DEFAULT 'completed' NOT NULL")
+        if "processing_stage" not in email_columns:
+            email_statements.append("ALTER TABLE emails ADD COLUMN processing_stage VARCHAR(64) DEFAULT 'completed' NOT NULL")
+        if "processing_progress" not in email_columns:
+            email_statements.append("ALTER TABLE emails ADD COLUMN processing_progress INTEGER DEFAULT 100 NOT NULL")
+        if "processing_message" not in email_columns:
+            email_statements.append("ALTER TABLE emails ADD COLUMN processing_message VARCHAR(500) DEFAULT '' NOT NULL")
+        if "processing_started_at" not in email_columns:
+            email_statements.append("ALTER TABLE emails ADD COLUMN processing_started_at TIMESTAMP")
+        if "processing_finished_at" not in email_columns:
+            email_statements.append("ALTER TABLE emails ADD COLUMN processing_finished_at TIMESTAMP")
         if email_statements:
             with engine.begin() as connection:
                 for statement in email_statements:
