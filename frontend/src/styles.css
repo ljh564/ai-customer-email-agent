@@ -1558,6 +1558,22 @@ h3 {
   flex: 0 0 auto;
 }
 
+.refreshMailButton.refreshing svg {
+  animation: mailRefreshSpin 850ms linear infinite;
+}
+
+.refreshMailButton:disabled {
+  border-color: #aac4d8;
+  background: #edf5fb;
+  color: #245f90;
+  cursor: default;
+  opacity: 1;
+}
+
+@keyframes mailRefreshSpin {
+  to { transform: rotate(360deg); }
+}
+
 .mailScopeSelect {
   width: 142px;
   height: 36px;

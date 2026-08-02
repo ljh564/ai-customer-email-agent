@@ -889,17 +889,26 @@ function App() {
 
   async function syncMail(options: { silent?: boolean } = {}) {
     // 手动/自动同步共用同一入口。syncingRef 用来避免上一次同步未结束时重复发起请求。
-    if (syncingRef.current) return;
+    if (syncingRef.current) {
+      return;
+    }
     syncingRef.current = true;
     if (!options.silent) setSyncing(true);
     try {
       const response = await apiFetch(`${API_URL}/mail/import?limit=5`, { method: "POST" });
-      if (!response.ok) return;
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.detail || (locale === "zh" ? "邮箱刷新失败" : "Mailbox refresh failed"));
+      }
       const result = (await response.json()) as { queued_count?: number; skipped_count?: number; emails?: EmailRecord[] };
       const imported = result.emails || [];
       await loadEmails();
       await loadOperationLogs();
       if (!options.silent && imported.length > 0) setSelectedId(imported[0].id);
+    } catch (error) {
+      if (!options.silent) {
+        window.alert(error instanceof Error ? error.message : (locale === "zh" ? "邮箱刷新失败，请稍后重试。" : "Mailbox refresh failed. Please try again."));
+      }
     } finally {
       syncingRef.current = false;
       if (!options.silent) setSyncing(false);
@@ -2055,9 +2064,10 @@ function EmailQueue({
           )}
           {onRefresh && (
             <button
-              className="iconButton tooltipButton"
-              onClick={onRefresh}
+              className={`iconButton tooltipButton refreshMailButton ${refreshing ? "refreshing" : ""}`}
+              onClick={() => onRefresh()}
               disabled={refreshing}
+              aria-busy={refreshing}
               aria-label={refreshTitle || (locale === "zh" ? "刷新邮件" : "Refresh emails")}
               data-tooltip={refreshTitle || (locale === "zh" ? "刷新邮件" : "Refresh emails")}
             >
