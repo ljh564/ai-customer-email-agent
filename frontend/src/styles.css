@@ -1637,6 +1637,51 @@ h3 {
   align-self: start;
 }
 
+.queueProcessingProgress {
+  grid-column: 1 / -1;
+  grid-row: 4;
+  display: grid;
+  gap: 5px;
+  margin-top: 2px;
+}
+
+.queueProcessingProgress > div:first-child {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: #315f8f;
+  font-size: 12px;
+}
+
+.queueProcessingProgress strong {
+  display: block;
+  grid-column: auto;
+  grid-row: auto;
+  color: #315f8f;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.queueProgressTrack,
+.agentProgressTrack {
+  width: 100%;
+  overflow: hidden;
+  background: #dfe8f0;
+}
+
+.queueProgressTrack {
+  height: 5px;
+  border-radius: 3px;
+}
+
+.queueProgressTrack > span,
+.agentProgressTrack > div {
+  display: block;
+  height: 100%;
+  background: #2f6fa8;
+  transition: width 220ms ease;
+}
+
 .queueSection {
   display: block;
   flex-shrink: 0;
@@ -1829,6 +1874,87 @@ h3 {
   line-height: 1.55;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
+}
+
+.agentProcessingPanel {
+  border: 1px solid #cbddea;
+  border-radius: 8px;
+  background: #f7fbfe;
+  padding: 16px;
+  display: grid;
+  gap: 12px;
+}
+
+.agentProcessingPanel.failed {
+  border-color: #e8b8b8;
+  background: #fff8f8;
+}
+
+.agentProcessingHeader,
+.agentProcessingHeader > div {
+  display: flex;
+  align-items: center;
+}
+
+.agentProcessingHeader {
+  justify-content: space-between;
+  color: #234f82;
+}
+
+.agentProcessingPanel.failed .agentProcessingHeader {
+  color: #9b1c1c;
+}
+
+.agentProcessingHeader > div {
+  gap: 8px;
+}
+
+.agentProgressTrack {
+  height: 8px;
+  border-radius: 4px;
+}
+
+.agentProcessingPanel.failed .agentProgressTrack > div {
+  background: #bd3d3d;
+}
+
+.agentProcessingPanel > p {
+  margin: 0;
+  color: #4f6475;
+  font-size: 13px;
+}
+
+.agentPhaseList {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px 14px;
+}
+
+.agentPhase {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: #7a8995;
+  font-size: 12px;
+}
+
+.agentPhase.complete {
+  color: #1f7651;
+}
+
+.agentPhase.active {
+  color: #245b91;
+  font-weight: 700;
+}
+
+.agentPhase.failed {
+  color: #a32121;
+}
+
+.detail.processing .costPanel,
+.detail.processing .replyPanel {
+  display: none;
 }
 
 .attachmentList {

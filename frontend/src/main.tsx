@@ -69,6 +69,7 @@ async function apiFetch(input: RequestInfo | URL, init: RequestInit = {}) {
 type Locale = "en" | "zh";
 type ActiveView = "inbox" | "review" | "knowledge" | "runs" | "settings";
 type EmailStatus = "new" | "processed" | "human_review" | "ready_to_send" | "needs_revision" | "escalated" | "sent" | "irrelevant";
+type EmailProcessingStatus = "queued" | "running" | "completed" | "failed";
 type KnowledgeStatus = "processing" | "indexed" | "failed" | "needs_reindex";
 type KnowledgeInputMode = "upload" | "manual";
 type MailProvider = "qq" | "outlook" | "gmail";
@@ -239,6 +240,12 @@ type EmailRecord = {
   category: string | null;
   priority: "low" | "medium" | "high";
   status: EmailStatus;
+  processing_status: EmailProcessingStatus;
+  processing_stage: string;
+  processing_progress: number;
+  processing_message: string;
+  processing_started_at?: string | null;
+  processing_finished_at?: string | null;
   confidence: number;
   risk_flags: string[];
   knowledge_hits: KnowledgeHit[];
@@ -534,6 +541,7 @@ function App() {
   const viewedReadyCount = readyToSendEmails.filter((email) => viewedReadyIds.includes(email.id)).length;
   const canBulkSendReady = readyToSendEmails.length > 0 && viewedReadyCount === readyToSendEmails.length;
   const processedCount = emails.filter((email) => email.status === "processed" || email.status === "ready_to_send").length;
+  const hasProcessingEmails = emails.some(isEmailProcessing);
   const pageMeta = getPageMeta(activeView, t);
   const visibleViews = getVisibleViews(currentUser?.role);
 
@@ -612,6 +620,7 @@ function App() {
       selectedIdRef.current = data[0].id;
       setSelectedId(data[0].id);
     }
+    return data;
   }
 
   async function loadKnowledgeDocuments() {
@@ -891,21 +900,10 @@ function App() {
       await loadEmails();
       await loadOperationLogs();
       if (!options.silent && imported.length > 0) setSelectedId(imported[0].id);
-      if ((result.queued_count || 0) > 0) pollMailProcessing(0, options.silent);
     } finally {
       syncingRef.current = false;
       if (!options.silent) setSyncing(false);
     }
-  }
-
-  function pollMailProcessing(round = 0, silent = false) {
-    // 当前活动邮件源导入后，后端会在 BackgroundTasks 中异步处理邮件。
-    // 前端短时间轮询几次，让用户能看到“处理中 -> 分类完成”的变化。
-    if (round >= 20) return;
-    window.setTimeout(async () => {
-      await Promise.all([loadEmails(), loadOperationLogs()]);
-      pollMailProcessing(round + 1, silent);
-    }, silent ? 3000 : 1500);
   }
 
   async function sendReply(emailId: string) {
@@ -1115,6 +1113,17 @@ function App() {
       window.clearTimeout(initialTimer);
     };
   }, [currentUser?.id, mailListScope]);
+
+  useEffect(() => {
+    // 进度轮询由邮件状态驱动。刷新页面或切换视图后，只要仍有后台任务，
+    // 页面就会继续刷新；全部任务结束后定时器会随状态变化自动销毁。
+    if (!currentUser || !hasProcessingEmails) return;
+    const timer = window.setInterval(() => {
+      if (document.visibilityState !== "visible") return;
+      loadEmails();
+    }, 1_000);
+    return () => window.clearInterval(timer);
+  }, [currentUser?.id, hasProcessingEmails, mailListScope]);
 
   useEffect(() => {
     // 用户看过所有 ready_to_send 邮件后，才允许批量确认发送。
@@ -1762,6 +1771,65 @@ function AgentCostPanel({ metrics, locale }: { metrics: AgentMetrics; locale: Lo
   );
 }
 
+const processingPhaseIds = ["preprocess", "relevance_gate", "semantic_analysis", "retrieve", "draft", "review"] as const;
+
+function isEmailProcessing(email: EmailRecord) {
+  return email.processing_status === "queued" || email.processing_status === "running";
+}
+
+function processingStageIndex(stage: string) {
+  const aliases: Record<string, number> = {
+    queued: -1,
+    preprocess: 0,
+    relevance_gate: 1,
+    semantic_analysis: 2,
+    semantic_relevance_gate: 2,
+    retrieve: 3,
+    draft: 4,
+    review: 5,
+    completed: 6,
+  };
+  return aliases[stage] ?? -1;
+}
+
+function AgentProcessingPanel({ email, locale }: { email: EmailRecord; locale: Locale }) {
+  const failed = email.processing_status === "failed";
+  const currentIndex = processingStageIndex(email.processing_stage);
+  const labels = locale === "zh"
+    ? ["低成本预处理", "客服场景判断", "语义分析", "检索知识库", "生成回复草稿", "审核门控"]
+    : ["Low-cost preprocessing", "Support relevance", "Semantic analysis", "Knowledge retrieval", "Draft generation", "Review gate"];
+  const progress = Math.max(0, Math.min(email.processing_progress || 0, 100));
+
+  return (
+    <section className={`agentProcessingPanel ${failed ? "failed" : ""}`} aria-live="polite">
+      <div className="agentProcessingHeader">
+        <div>
+          {failed ? <XCircle size={18} /> : <Activity size={18} />}
+          <strong>{failed ? (locale === "zh" ? "Agent 处理失败" : "Agent processing failed") : (locale === "zh" ? "Agent 正在处理" : "Agent is processing")}</strong>
+        </div>
+        <strong>{progress}%</strong>
+      </div>
+      <div className="agentProgressTrack" aria-label={`${progress}%`}>
+        <div style={{ width: `${progress}%` }} />
+      </div>
+      <p>{email.processing_message || (locale === "zh" ? "正在处理邮件" : "Processing email")}</p>
+      <div className="agentPhaseList">
+        {processingPhaseIds.map((phase, index) => {
+          const complete = email.processing_status === "completed" || index < currentIndex;
+          const active = !complete && index === currentIndex;
+          const phaseFailed = failed && active;
+          return (
+            <div key={phase} className={`agentPhase ${complete ? "complete" : active ? "active" : "waiting"} ${phaseFailed ? "failed" : ""}`}>
+              {complete ? <CheckCircle2 size={16} /> : phaseFailed ? <XCircle size={16} /> : active ? <Activity size={16} /> : <Clock3 size={16} />}
+              <span>{labels[index]}</span>
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 function RunLogPage({ operationLogs, emails, cleaningLogs, onCleanup, locale }: { operationLogs: OperationLog[]; emails: EmailRecord[]; cleaningLogs: boolean; onCleanup: () => void; locale: Locale }) {
   // 运行日志把“邮件 Agent 轨迹”和“知识库操作”拆开展示，避免审核历史挤在邮件详情里。
   const knowledgeLogs = operationLogs.filter((log) => log.scope === "knowledge");
@@ -1957,7 +2025,13 @@ function EmailQueue({
       <span className={`priority ${email.priority}`}>{priorityLabels[locale][email.priority]}</span>
       <strong>{formatEmailSubject(email.subject, locale)}</strong>
       <span>{email.customer_name}</span>
-      <small>{statusLabels[locale][email.status]}</small>
+      <small>{isEmailProcessing(email) ? email.processing_message : statusLabels[locale][email.status]}</small>
+      {isEmailProcessing(email) && (
+        <div className="queueProcessingProgress" aria-label={`${email.processing_progress}%`}>
+          <div><span>{locale === "zh" ? "处理中" : "Processing"}</span><strong>{email.processing_progress}%</strong></div>
+          <div className="queueProgressTrack"><span style={{ width: `${email.processing_progress}%` }} /></div>
+        </div>
+      )}
     </button>
   );
 
@@ -2061,6 +2135,7 @@ function EmailDetail({ selected, currentUser, locale, t, review, updateEscalatio
   const reviewActions = selected.review_actions || [];
   const visibleReviewActions = showAllReviewHistory ? reviewActions : reviewActions.slice(-3);
   const isIrrelevant = selected.status === "irrelevant";
+  const isProcessing = isEmailProcessing(selected);
   const metrics = normalizeAgentMetrics(selected.agent_metrics);
   const isGeneratingReply = regeneratingId === selected.id;
   const ticket = selected.escalation_ticket;
@@ -2082,7 +2157,7 @@ function EmailDetail({ selected, currentUser, locale, t, review, updateEscalatio
   }, [selected.id, selected.status, selected.draft_reply, isGeneratingReply, regenerateReply]);
 
   return (
-    <article className="detail">
+    <article className={`detail ${isProcessing ? "processing" : ""}`}>
       <header className="detailHeader">
         <div>
           <div className="statusLine"><StatusIcon status={selected.status} /><span>{statusLabels[locale][selected.status]}</span></div>
@@ -2113,6 +2188,7 @@ function EmailDetail({ selected, currentUser, locale, t, review, updateEscalatio
           </div>
         )}
       </section>
+      {(isProcessing || selected.processing_status === "failed") && <AgentProcessingPanel email={selected} locale={locale} />}
       <AgentCostPanel metrics={metrics} locale={locale} />
       <section className="replyPanel">
         <div className="replyHeader">
@@ -2523,4 +2599,3 @@ createRoot(document.getElementById("root")!).render(
     <App />
   </React.StrictMode>
 );
-
